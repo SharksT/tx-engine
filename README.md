@@ -71,6 +71,8 @@ Withdrawals are not stored - they only affect the account balance at processing 
 
 **Frozen accounts can still have disputes processed.** When an account is locked (after a chargeback), new deposits and withdrawals are blocked. However, disputes and resolves on past transactions are still allowed - a frozen account shouldn't prevent investigation of potentially fraudulent transactions.
 
+**Chargeback is a terminal state.** A transaction can be disputed multiple times, but only if the previous dispute was resolved. Once a chargeback occurs, that transaction can never be disputed again - the funds have been permanently reversed and there's nothing left to dispute. This mirrors real banking behavior where a chargeback represents a final decision. The state machine is: `None → Disputed → Resolved (back to None)` allows re-dispute, but `None → Disputed → ChargedBack` is terminal.
+
 **Zero and negative amounts are ignored.** Deposits and withdrawals with amounts <= 0 are silently skipped. Zero-amount transactions have no effect and would waste memory if stored.
 
 **Invalid input terminates processing.** Malformed CSV rows cause the program to exit with an error rather than silently skipping. This ensures data integrity at the cost of fault tolerance.
@@ -85,11 +87,11 @@ Withdrawals are not stored - they only affect the account balance at processing 
 cargo test
 ```
 
-20 unit tests cover:
+22 unit tests cover:
 - Deposit and withdrawal operations
 - Insufficient funds handling
 - Dispute lifecycle (dispute → resolve, dispute → chargeback)
-- Edge cases (nonexistent tx, wrong client, double dispute)
+- Edge cases (nonexistent tx, wrong client, double dispute, re-dispute after resolve, chargeback prevents re-dispute)
 - Locked account behavior
 - Decimal precision
 

@@ -50,11 +50,19 @@ pub struct Transaction {
     pub amount: Option<Decimal>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DisputeState {
+    #[default]
+    None,
+    Disputed,
+    ChargedBack,
+}
+
 #[derive(Debug, Clone)]
 pub struct StoredTransaction {
     pub client: u16,
     pub amount: i64,
-    pub disputed: bool,
+    pub dispute_state: DisputeState,
 }
 
 #[derive(Debug, Default)]

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use rust_decimal::Decimal;
 
-use crate::types::{to_fixed, Account, AccountOutput, StoredTransaction, Transaction, TransactionType};
+use crate::types::{to_fixed, Account, AccountOutput, DisputeState, StoredTransaction, Transaction, TransactionType};
 
 pub struct Engine {
     accounts: HashMap<u16, Account>,
@@ -47,7 +47,7 @@ impl Engine {
             StoredTransaction {
                 client: tx.client,
                 amount,
-                disputed: false,
+                dispute_state: DisputeState::None,
             },
         );
     }
@@ -72,50 +72,54 @@ impl Engine {
 
     /// Only deposits are stored, so disputes implicitly only apply to deposits.
     /// Disputes can still happen if the account is locked.
+    /// A transaction can only be disputed if it's not currently disputed and hasn't been chargedback.
     fn dispute(&mut self, tx: Transaction) {
         let Some(stored) = self.transactions.get_mut(&tx.tx) else {
             return;
         };
 
-        if stored.client != tx.client || stored.disputed {
+        if stored.client != tx.client || stored.dispute_state != DisputeState::None {
             return;
         }
 
         let account = self.accounts.entry(tx.client).or_default();
 
-        stored.disputed = true;
+        stored.dispute_state = DisputeState::Disputed;
         account.available = account.available.saturating_sub(stored.amount);
         account.held = account.held.saturating_add(stored.amount);
     }
 
+    /// Resolve returns held funds to available. Only works on currently disputed transactions.
+    /// After resolve, the transaction returns to None state and can be disputed again.
     fn resolve(&mut self, tx: Transaction) {
         let Some(stored) = self.transactions.get_mut(&tx.tx) else {
             return;
         };
 
-        if stored.client != tx.client || !stored.disputed {
+        if stored.client != tx.client || stored.dispute_state != DisputeState::Disputed {
             return;
         }
 
         let account = self.accounts.entry(tx.client).or_default();
 
-        stored.disputed = false;
+        stored.dispute_state = DisputeState::None;
         account.held = account.held.saturating_sub(stored.amount);
         account.available = account.available.saturating_add(stored.amount);
     }
 
+    /// Chargeback is a terminal state - the transaction can never be disputed again.
     fn chargeback(&mut self, tx: Transaction) {
         let Some(stored) = self.transactions.get_mut(&tx.tx) else {
             return;
         };
 
-        if stored.client != tx.client || !stored.disputed {
+        if stored.client != tx.client || stored.dispute_state != DisputeState::Disputed {
             return;
         }
 
         let account = self.accounts.entry(tx.client).or_default();
 
-        stored.disputed = false;
+        stored.dispute_state = DisputeState::ChargedBack;
         account.held = account.held.saturating_sub(stored.amount);
         account.locked = true;
     }
@@ -428,6 +432,37 @@ mod tests {
         let account = output.iter().find(|a| a.client == 1).unwrap();
         assert_eq!(account.available, fixed(5, 0));
         assert_eq!(account.held, 0);
+    }
+
+    #[test]
+    fn test_chargeback_prevents_redispute() {
+        let mut engine = Engine::new();
+        engine.process(deposit(1, 1, dec!(10.0)));
+        engine.process(dispute(1, 1));
+        engine.process(chargeback(1, 1));
+        // Try to dispute again - should be ignored
+        engine.process(dispute(1, 1));
+
+        let output = engine.output();
+        let account = output.iter().find(|a| a.client == 1).unwrap();
+        assert_eq!(account.available, 0);
+        assert_eq!(account.held, 0); // Should still be 0, not 10
+        assert!(account.locked);
+    }
+
+    #[test]
+    fn test_resolve_allows_redispute() {
+        let mut engine = Engine::new();
+        engine.process(deposit(1, 1, dec!(10.0)));
+        engine.process(dispute(1, 1));
+        engine.process(resolve(1, 1));
+        // Dispute again after resolve - should work
+        engine.process(dispute(1, 1));
+
+        let output = engine.output();
+        let account = output.iter().find(|a| a.client == 1).unwrap();
+        assert_eq!(account.available, 0);
+        assert_eq!(account.held, fixed(10, 0));
     }
 
     #[test]
